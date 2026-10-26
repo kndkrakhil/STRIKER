@@ -1,15 +1,21 @@
 # Four in a Row Online
-Two-player, real-time, works across devices. Node 18+.
 
-## Run locally
-    npm install
-    npm start        # http://localhost:3000
+A two-player game hosted on Netlify. Share a four-letter code to play across devices; additional visitors can watch. No account is required.
 
-Two browser tabs (or two phones on the same Wi-Fi at http://YOUR-PC-IP:3000) can play each other.
+## Hosting
 
-## Put it on the internet (free options)
-- Render.com: New > Web Service > connect your GitHub repo. Build: `npm install`, Start: `npm start`.
-- Railway / Fly.io / any Node host: same two commands. The app reads the PORT env var.
-- Quick temporary link from your PC: `npx localtunnel --port 3000` (or ngrok).
+Netlify publishes `public/` using `netlify.toml`. The `/api/game` Netlify Function handles creating games, joining, moves, and rematches. Game state persists in Netlify Database using Drizzle ORM. The browser polls every 1.5 seconds while a game is open and restores the saved game after a refresh.
 
-Notes: games live in server memory (a restart clears them). One server instance only.
+Schema definitions live in `db/schema.ts`. Generated migrations in `netlify/database/migrations/` are applied automatically by Netlify during deployment. Generate a new migration after changing the schema with `npx drizzle-kit generate --name describe_change`. Do not apply migrations manually.
+
+## Local development
+
+Install dependencies with `npm install`, then run `npm start` with the Netlify CLI installed and the project linked to its Netlify site. The development URL is `http://localhost:8889`. Use Netlify's development environment so both the API and database integration are available; opening the HTML file directly does not run multiplayer.
+
+Run `npm test` for game and browser checks and `npm run typecheck` for TypeScript validation.
+
+## Game behavior
+
+Red starts the first round. Players take turns dropping discs until someone connects four or the board fills. Either player can start a rematch after the round ends, with the starting color alternating. Leaving returns to the lobby; the saved seat remains available to the same browser when it rejoins by code. Player identity is kept in that browser's local storage; separate devices or browser profiles are needed to occupy separate seats.
+
+Updates use optimistic revision checks, so simultaneous requests cannot overwrite a newer move or claim the same second-player seat. Game responses never include player identifiers. If a move's response is lost, polling refreshes the board rather than automatically repeating the move.
