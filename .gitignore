@@ -1,4 +1,6 @@
 node_modules/
+.netlify/*
+!.netlify/results.md
 .env
 .DS_Store
 Thumbs.db

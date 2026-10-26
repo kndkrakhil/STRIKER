@@ -18,6 +18,7 @@
   --board:#2f55a8; --board-edge:#1f3d80; --hole:#12172a;
   --p1:#ff6a5a; --p2:#ffc83d; --accent:#8fb0ff; --accent-ink:#0e1530; --ok:#5fd39a; --warn:#f0a35e; color-scheme:dark}
 *{box-sizing:border-box}
+[hidden]{display:none!important}
 body{background:var(--bg);color:var(--fg);font-family:var(--font-body);font-size:16px;line-height:1.5;
   padding-block:20px 40px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
 main{max-width:520px;margin:0 auto;display:flex;flex-direction:column;gap:16px;min-width:0}
@@ -108,29 +109,58 @@ details ol{margin:10px 0 0;padding-left:1.2rem;display:flex;flex-direction:colum
       <li>Share the game code. Your friend enters it to take the other seat. More visitors can watch.</li>
     </ol>
   </details>
-  <p class="foot">Moves sync live over WebSockets. No account needed.</p>
+  <p class="foot">Moves sync automatically across devices. No account needed.</p>
 </main>
 
 <script>
 (function(){
   var ROWS=6, COLS=7, $=function(id){return document.getElementById(id)};
-  var ws=null, state=null, prevBoard=null, code=null, queue=[];
+  var state=null, prevBoard=null, code=null, busy=false, polling=false, generation=0;
   var pid; try{pid=localStorage.getItem("c4pid")}catch(e){}
-  if(!pid){pid="p"+Math.random().toString(36).slice(2)+Date.now().toString(36);try{localStorage.setItem("c4pid",pid)}catch(e){}}
+  if(!pid){pid=crypto.randomUUID();try{localStorage.setItem("c4pid",pid)}catch(e){}}
   function lowest(b,c){for(var r=ROWS-1;r>=0;r--){if(!b[r*COLS+c])return r}return -1}
   function note(t,warn){var n=$("note");n.textContent=t||"";n.hidden=!t;n.className="msg"+(warn?" warn":"")}
   function show(w){$("lobby").hidden=w!=="lobby";$("game").hidden=w!=="game"}
-  function send(o){var s=JSON.stringify(o);if(ws&&ws.readyState===1)ws.send(s);else queue.push(s)}
-  function connect(){
-    var proto=location.protocol==="https:"?"wss://":"ws://";
-    ws=new WebSocket(proto+location.host);
-    ws.onopen=function(){ws.send(JSON.stringify({t:"hello",id:pid}));
-      if(code)ws.send(JSON.stringify({t:"join",code:code}));
-      queue.splice(0).forEach(function(s){ws.send(s)});note("")};
-    ws.onmessage=function(e){var m=JSON.parse(e.data);
-      if(m.t==="error")note(m.msg,true);
-      if(m.t==="state"){if(!code||code!==m.code){code=m.code;prevBoard=null;build();show("game");$("gcode").textContent=code;try{localStorage.setItem("c4code",code)}catch(x){}}state=m;render()}};
-    ws.onclose=function(){note("Connection lost. Reconnecting…",true);setTimeout(connect,1500)};
+  function accept(m){
+    if(!code||code!==m.code){code=m.code;prevBoard=null;build();show("game");$("gcode").textContent=code;try{localStorage.setItem("c4code",code)}catch(x){}}
+    state=m;render();
+  }
+  async function request(o){
+    var options={headers:{"X-Player-Id":pid},cache:"no-store",signal:AbortSignal.timeout(12000)};
+    var url="/api/game";
+    if(o){options.method="POST";options.headers["Content-Type"]="application/json";options.body=JSON.stringify(o)}
+    else url+="?code="+encodeURIComponent(code);
+    var res=await fetch(url,options), m;
+    try{m=await res.json()}catch(e){throw new Error("The game service is unavailable. Please try again shortly.")}
+    if(!res.ok){var err=new Error(m.msg||"Unable to sync the game.");err.status=res.status;throw err}
+    return m;
+  }
+  function controls(){
+    $("create").disabled=busy;$("join").disabled=busy;$("again").disabled=busy;
+    if(state)render();
+  }
+  async function send(o){
+    if(busy)return;
+    var current=++generation;
+    busy=true;controls();
+    if(code)o.code=code;
+    if(state)o.revision=state.revision;
+    try{var m=await request(o);if(current===generation){accept(m);note("")}}
+    catch(e){if(current===generation)note(e.message||"Connection lost. Please try again.",true)}
+    finally{busy=false;controls()}
+  }
+  async function poll(){
+    if(code&&!busy&&!polling){
+      var current=generation;
+      polling=true;
+      try{var m=await request(null);if(current===generation){accept(m);note("")}}
+      catch(e){if(current===generation){
+        note(e.message||"Connection lost. Retrying…",true);
+        if(e.status===404){code=null;state=null;show("lobby");try{localStorage.removeItem("c4code")}catch(x){}}
+      }}
+      finally{polling=false}
+    }
+    setTimeout(poll,1500);
   }
   function build(){
     var host=$("cols"); host.textContent="";
@@ -150,7 +180,7 @@ details ol{margin:10px 0 0;padding-left:1.2rem;display:flex;flex-direction:colum
         var i=r*COLS+c, v=b[i];
         cells[r].className="cell"+(v?" p"+v:"")+(s.line.indexOf(i)>-1?" win":"")+(v&&prevBoard&&!prevBoard[i]?" new":"");
       }
-      cols[c].disabled=!(seat&&seat===s.turn&&!s.winner&&s.hasP2&&lowest(b,c)>=0);
+      cols[c].disabled=busy||!(seat&&seat===s.turn&&!s.winner&&s.hasP2&&lowest(b,c)>=0);
     }
     prevBoard=b.slice();
     $("s1t").textContent=seat===1?"You (Red)":"Red";
@@ -169,12 +199,15 @@ details ol{margin:10px 0 0;padding-left:1.2rem;display:flex;flex-direction:colum
     $("again").hidden=!(s.winner&&seat);
   }
   $("create").onclick=function(){note("");send({t:"create"})};
-  function join(){var c=$("codein").value.trim().toUpperCase();if(c.length!==4){note("Enter the 4-letter code.",true);return}note("");send({t:"join",code:c})}
+  function join(){var c=$("codein").value.trim().toUpperCase();if(!/^[A-Z]{4}$/.test(c)){note("Enter the 4-letter code.",true);return}note("");send({t:"join",code:c})}
   $("join").onclick=join;
   $("codein").addEventListener("keydown",function(e){if(e.key==="Enter")join()});
   $("again").onclick=function(){send({t:"again"})};
-  $("leave").onclick=function(){code=null;state=null;show("lobby");try{localStorage.removeItem("c4code")}catch(e){}};
+  $("leave").onclick=function(){generation++;code=null;state=null;prevBoard=null;note("");show("lobby");try{localStorage.removeItem("c4code")}catch(e){}};
   $("copy").onclick=function(){var b=$("copy");try{navigator.clipboard.writeText(code).then(function(){b.textContent="Copied";setTimeout(function(){b.textContent="Copy code"},1500)})}catch(e){}};
-  show("lobby"); connect();
+  show("lobby");
+  var saved;try{saved=localStorage.getItem("c4code")}catch(e){}
+  if(saved&&/^[A-Z]{4}$/.test(saved))send({t:"join",code:saved});
+  setTimeout(poll,1500);
 })();
 </script></body></html>
